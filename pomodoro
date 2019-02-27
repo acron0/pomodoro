@@ -13,19 +13,41 @@ POMODORO_LOG_DIRECTORY="$HOME/Documents/Pomodoro"
 # if you add a TODO.txt file in $POMODORO_LOG_DIRECTORY
 # The list of TODO is presented for shortcut
 POMODORO_TODO_FILE="$POMODORO_LOG_DIRECTORY/TODO.txt"
+POMODORO_CURRENT_TIME_FILE="$POMODORO_LOG_DIRECTORY/.CURRENT-TIME"
+POMODORO_CURRENT_STATE_FILE="$POMODORO_LOG_DIRECTORY/.CURRENT-STATE"
+POMODORO_CURRENT_PID="$POMODORO_LOG_DIRECTORY/.CURRENT-PID"
+
+#
+POMODORO_FILENAME_FORMAT="%Y-week-%V.txt"
+
+#
+POMODORO_NUM_LATEST_TASKS=5
 
 # times are in minutes
 POMODORO_WORKING_TIME=25
 POMODORO_SHORT_RELAX_TIME=5
 POMODORO_LONG_RELAX_TIME=15
-# you can install get-shit-done at 
+# you can install get-shit-done at
 # http://github.com/yogsototh/get-shit-done.git
 # If you want to block some popular website
 # during your work session.
 # note you can overide these functions in $HOME/.pomodoro
 
+POMODORO_WANTS_NEXT_STATE=
+
+function exit_please {
+    echo "\nExiting..."
+    if [ -f $POMODORO_CURRENT_PID ]; then
+        rm $POMODORO_CURRENT_PID
+    fi
+    exit 0
+}
+
 has(){
     which $1 >/dev/null 2>&1
+}
+write_state() {
+    echo $1 > $POMODORO_CURRENT_STATE_FILE
 }
 focus_on() {
     has get-shit-done && {
@@ -40,10 +62,10 @@ focus_off() {
     }
 }
 
-pomodoro_work_started() { focus_on }
-pomodoro_work_time_ended() {}
-pomodoro_pause_started() { focus_off }
-pomodoro_pause_time_ended() { focus_on }
+pomodoro_work_started() { focus_on; write_state "work" }
+pomodoro_work_time_ended() { write_state "over-working" }
+pomodoro_pause_started() { focus_off; write_state "relax" }
+pomodoro_pause_time_ended() { focus_on; write_state "slacking"  }
 
 # used to list latests task names
 typeset -U latestTasks
@@ -116,18 +138,25 @@ function pretimer() {
     local firsttime=1
     while (( m+s > 0 )); do
         ((s--))
-        if ((s<0)); then 
-            ((s=59)) 
+        if ((s<0)); then
+            ((s=59))
             ((m--))
         fi
-        printf "$rem%02d:%02d" $m $s
+        TIME=$(printf "%02d:%02d" $m $s)
+        printf "$rem$TIME"
+        echo $TIME > $POMODORO_CURRENT_TIME_FILE
+        # printf "$rem%02d:%02d" $m $s
         (( $firsttime )) && {
             rem="\b\b\b\b\b"
             firsttime=0
         }
-        read -t 1 && { 
-            return 1
-        }
+        [[ "$POMODORO_WANTS_NEXT_STATE" == "1" ]] || read -t 1 && {
+                if [[ "$POMODORO_WANTS_NEXT_STATE" == "1" ]]; then
+                    print
+                    POMODORO_WANTS_NEXT_STATE=
+                fi
+                return 1
+            }
     done
     print
     return 0
@@ -143,30 +172,36 @@ funtion posttimer() {
     notify "$message"
     while : ; do
         ((s++))
-        if ((s>59)); then 
-            ((s=0)) 
+        if ((s>59)); then
+            ((s=0))
             ((m++))
             notify "\r$message      "
         fi
-        printf "$rem+%02d:%02d" $m $s
+        TIME=$(printf "+%02d:%02d" $m $s)
+        printf "$rem$TIME"
+        echo $TIME > $POMODORO_CURRENT_TIME_FILE
         (( $firsttime )) && {
             rem="\b\b\b\b\b\b"
             firsttime=0
         }
-        read -t 1 && break
+        [[ "$POMODORO_WANTS_NEXT_STATE" == "1" ]] || read -t 1 && break
     done
+    if [[ "$POMODORO_WANTS_NEXT_STATE" == "1" ]]; then
+        print
+        POMODORO_WANTS_NEXT_STATE=
+    fi
 }
 
 # If you had done some task this week
 # We help you find these
 function initLatestTasksFromLogFile() {
-    if [[ ! -r $logfile ]]; then 
+    if [[ ! -r $logfile ]]; then
         [[ ! -r $lastweeklogfile ]] && return
         latestlogfile="$lastweeklogfile"
     else
         latestlogfile="$logfile"
     fi
-    local cmd="latestTasks=( $( tail -n 5 $latestlogfile | awk '{printf "\""; gsub(/"/,"\\\""); gsub(/%/,"°/o"); for (i=6;i<=NF;i++) printf $i" "; print "\""}' ) )"
+    local cmd="latestTasks=( $( tail -n $POMODORO_NUM_LATEST_TASKS $latestlogfile | awk '{printf "\""; gsub(/"/,"\\\""); gsub(/%/,"°/o"); for (i=6;i<=NF;i++) printf $i" "; print "\""}' ) )"
     eval $cmd
 }
 
@@ -188,31 +223,31 @@ function initialize() {
     else
         # Verify where to write podomoro logs
         logfiledir="$POMODORO_LOG_DIRECTORY"
-        logfilename=$(date +"week-%V-%Y.txt")
+        logfilename=$(date +$POMODORO_FILENAME_FORMAT)
 
         case $(uname) in
-            Linux) lastweeklogfile=$(date -d 'last week' +"week-%V-%Y.txt");;
-            *) lastweeklogfile=$(date -v-7d +"week-%V-%Y.txt");;
+            Linux) lastweeklogfile=$(date -d 'last week' +$POMODORO_FILENAME_FORMAT);;
+            *) lastweeklogfile=$(date -v-7d +$POMODORO_FILENAME_FORMAT);;
         esac
         logfile=$logfiledir/$logfilename
 
-        while [[ ! -d $logfiledir ]]; do 
+        while [[ ! -d $logfiledir ]]; do
             print -- "$logfiledir does not exists. Would you want to create it? (y/n)"
             read answer
             case $answer in
                 Y|YES|y|yes) mkdir -p $logfiledir || exit 1;;
                 *) print -- "Enter a full path of directory to write logs or just enter NO to don't keep tasks."
                     read answer
-                    case $answer in 
+                    case $answer in
                         N|n|NO|no) logfiledir=/dev; logfile=/dev/null
                         ;;
-                        *)  logfiledir=$answer; 
+                        *)  logfiledir=$answer;
                             NO_LOGS=1;
                             logfile=$logfiledir/$logfilename ;;
                     esac
                     {
-                        print -- "logfiledir=$logfiledir" 
-                        (( NO_LOGS )) && print -- "NO_LOGS=1" 
+                        print -- "logfiledir=$logfiledir"
+                        (( NO_LOGS )) && print -- "NO_LOGS=1"
                     } > $HOME/.pomodoro
                     ;;
             esac
@@ -220,6 +255,12 @@ function initialize() {
     fi
     initLatestTasksFromLogFile
     initTodoTasksFromFile
+}
+
+# set the task var
+function setTask() {
+    task=$1
+    latestTasks=( $latestTasks "$task" )
 }
 
 # ask the title of the tasks
@@ -262,11 +303,10 @@ function askTitle() {
     latestTasks=( $latestTasks "$task" )
 }
 
-
 # first 3 pauses are short ones
 # the 4th is a long one
 function compute_pause_time() {
-    if ((nb++ % 4 == 0)); then 
+    if ((nb++ % 4 == 0)); then
         notify "Long pause "
         POMODORO_RELAX_TIME=$POMODORO_LONG_RELAX_TIME
     else
@@ -275,30 +315,102 @@ function compute_pause_time() {
     fi
 }
 
+function catchUsr1() {
+    POMODORO_WANTS_NEXT_STATE=1
+}
+
+function listTasks() {
+    for task in $latestTasks; do
+        echo $task
+    done
+}
+
+function showTime() {
+    if [ -f $POMODORO_CURRENT_TIME_FILE ]; then
+        cat $POMODORO_CURRENT_TIME_FILE
+    fi
+}
+
+function showState() {
+    if [ -f $POMODORO_CURRENT_STATE_FILE ]; then
+        cat $POMODORO_CURRENT_STATE_FILE
+    fi
+}
+
+function showStatus() {
+    if [ -f $POMODORO_CURRENT_PID ]; then
+        s=$(showState);
+        t=$(showTime);
+        if [[ ! "$s" == "" ]] && [[ ! "$t" == "" ]]; then
+            printf "%s %s" $(showState) $(showTime)
+        fi
+    else
+        echo "not running"
+    fi
+}
+
+function moveToNextState() {
+    if [ -f $POMODORO_CURRENT_PID ]; then
+        echo "Moving to next state..."
+        kill -s USR1 $(cat $POMODORO_CURRENT_PID)
+    else
+        echo "not running"
+    fi
+}
 # ------------- START -------------
 
 initialize
 
+if [[ "$1" == "list-tasks" ]]; then
+    listTasks
+    exit 0
+fi
+if [[ "$1" == "show-time" ]]; then
+    showTime
+    exit 0
+fi
+if [[ "$1" == "show-state" ]]; then
+    showState
+    exit 0
+fi
+if [[ "$1" == "show-status" ]]; then
+    showStatus;
+    exit 0
+fi
+if [[ "$1" == "next" ]]; then
+    moveToNextState;
+    exit 0
+fi
+
+trap exit_please INT
+echo "$$" > $POMODORO_CURRENT_PID
+
+trap catchUsr1 SIGUSR1
+
 while (true) {
-    # Ask the user the title of the task
-    askTitle
+          # Ask the user the title of the task
+          if [[ "$1" == "task" ]] && [[ "$2" != "" ]]; then
+              setTask $2
+          else
+              askTitle
+          fi
 
-    # Start working
-    startedTime=$(date +"%H:%M")
+          # Start working
+          startedTime=$(date +"%H:%M")
 
-    # notification isn't needed
-    print -n -- "WORK NOW! "
+          # notification isn't needed
+          print -n -- "WORK NOW! "
 
-    pomodoro_work_started
-    timer $POMODORO_WORKING_TIME "Time for a break." pomodoro_work_time_ended
-    # Task finished
+          pomodoro_work_started
+          timer $POMODORO_WORKING_TIME "Time for a break." pomodoro_work_time_ended
+          # Task finished
 
-    # Write logs
-    print "$(date +"%A (%F) $startedTime → %H:%M") $task" >> $logfile
+          # Write logs
+          print "$(date +"%A (%F) $startedTime → %H:%M") $task" >> $logfile
 
-    # Time for a break
-    compute_pause_time
+          # Time for a break
+          compute_pause_time
 
-    pomodoro_pause_started
-    timer $POMODORO_RELAX_TIME "Time to work!" pomodoro_pause_time_ended
-}
+          pomodoro_pause_started
+          timer $POMODORO_RELAX_TIME "Time to work!" pomodoro_pause_time_ended
+      }
